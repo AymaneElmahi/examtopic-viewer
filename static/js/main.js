@@ -1,20 +1,28 @@
 import { fetchFiles, fetchQuestions } from './api.js';
-import { state, getFeedState, resetForFile } from './state.js';
-import { esc, setView } from './ui.js';
-import { renderCards, pickCard, openDiscCard, closeDiscCard } from './cards.js';
-import { renderFeed, pickFeedItem, toggleDiscFeedItem } from './feed.js';
+import { state, resetForFile } from './state.js';
+import { esc, setView, fmtName, confirmClick } from './ui.js';
+import { renderCards, pickCard, revealCard, toggleFlagCurrent, toggleNav } from './cards.js';
+import { renderFeed, pickFeedItem, toggleDiscFeedItem, toggleFlagFeed, scrollToFeedItem, stopFeedObserver } from './feed.js';
 import { saveProgress, loadProgress, clearProgress } from './progress.js';
-import { examState, startExam, stopExam, handleExamAction } from './exam.js';
+import { examState, startExam, stopExam, showExam, handleExamAction, handleExamKey } from './exam.js';
 import { renderDownload, closeDownload } from './download.js';
 import { renderHistory, clearHistory } from './history.js';
 import { noteKey, saveNote, noteIconHtml } from './notes.js';
+import { clearResults, saveLastFile } from './results.js';
+import { setFilter, stepIn } from './queue.js';
+import { renderLibrary } from './library.js';
+import { startRename } from './navigator.js';
+import { saveCaseText } from './groups.js';
+import { needsDisclaimer, showAbout } from './about.js';
+
+const $ = id => document.getElementById(id);
 
 // ── Theme ──────────────────────────────────────────────
-function applyTheme(t) {
+function applyTheme(t, persist = true) {
   document.documentElement.setAttribute('data-theme', t);
   state.theme = t;
-  localStorage.setItem('theme', t);
-  const icon = document.getElementById('themeIcon');
+  if (persist) localStorage.setItem('theme', t);
+  const icon = $('themeIcon');
   if (icon) icon.innerHTML = t === 'dark' ? moonSvg() : sunSvg();
 }
 
@@ -25,14 +33,14 @@ function toggleTheme() {
 }
 
 function sunSvg() {
-  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+  return `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
     <circle cx="12" cy="12" r="4"/>
     <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
   </svg>`;
 }
 
 function moonSvg() {
-  return `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+  return `<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
     <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
   </svg>`;
 }
@@ -41,6 +49,7 @@ function moonSvg() {
 function showToast(msg) {
   const t = document.createElement('div');
   t.className = 'toast';
+  t.setAttribute('role', 'status');
   t.textContent = msg;
   document.body.appendChild(t);
   requestAnimationFrame(() => t.classList.add('show'));
@@ -50,242 +59,188 @@ function showToast(msg) {
   }, 3000);
 }
 
-// ── Filename → Display name ────────────────────────────
-function formatFileName(name) {
-  const special = { devops: 'DevOps', gcp: 'GCP', ai: 'AI', ml: 'ML' };
-  return name
-    .replace(/\.md$/i, '')
-    .split('-')
-    .map(w => special[w.toLowerCase()] ?? (w.charAt(0).toUpperCase() + w.slice(1)))
-    .join(' ');
-}
-
-// ── Welcome page ───────────────────────────────────────
-function renderWelcome(files) {
-  document.getElementById('view').className = 'welcome-wrap';
-
-  const examCards = files.map(f => `
-    <button class="exam-card" data-action="load-file" data-file="${esc(f)}">
-      <div class="exam-icon">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
-        </svg>
-      </div>
-      <div class="exam-info">
-        <div class="exam-name">${esc(formatFileName(f))}</div>
-        <div class="exam-cert">Google Cloud Certification</div>
-      </div>
-      <svg class="exam-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
-    </button>`).join('');
-
-  setView(`
-    <div class="welcome">
-      <div class="welcome-hero">
-        <div class="welcome-logo-wrap">
-          <img src="/static/img/logo.svg" width="54" height="54" alt="" />
-        </div>
-        <h1 class="welcome-title">ExamTopics Viewer</h1>
-        <p class="welcome-sub">Your <strong>free, offline</strong> ExamTopics viewer — no paywall, no account. Download any certification exam and study with community-consensus answers derived from real comment votes.</p>
-      </div>
-
-      <div class="welcome-features">
-        <div class="wf-item">
-          <div class="wf-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg>
-          </div>
-          <div>
-            <div class="wf-label">Community Consensus</div>
-            <div class="wf-desc">Majority vote from "Selected Answer" comments</div>
-          </div>
-        </div>
-        <div class="wf-item">
-          <div class="wf-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="3" width="7" height="7"/><rect x="15" y="3" width="7" height="7"/><rect x="15" y="14" width="7" height="7"/><rect x="2" y="14" width="7" height="7"/></svg>
-          </div>
-          <div>
-            <div class="wf-label">Cards & Feed modes</div>
-            <div class="wf-desc">Flashcards or scrollable Reddit-style feed</div>
-          </div>
-        </div>
-        <div class="wf-item">
-          <div class="wf-icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
-          </div>
-          <div>
-            <div class="wf-label">Threaded Discussion</div>
-            <div class="wf-desc">Top comment pinned, rest collapsible</div>
-          </div>
-        </div>
-      </div>
-
-      <div class="welcome-exams-section">
-        <p class="welcome-section-label">Choose an exam to begin</p>
-        <div class="welcome-exams">
-          ${examCards}
-          <button class="exam-card exam-card-dl" data-action="show-download">
-            <div class="exam-icon exam-icon-dl">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="11" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0018 9h-1.26A8 8 0 103 16.29"/></svg>
-            </div>
-            <div class="exam-info">
-              <div class="exam-name">Download New Exam</div>
-              <div class="exam-cert">From ExamTopics via Docker</div>
-            </div>
-            <svg class="exam-arrow" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><polyline points="9 18 15 12 9 6"/></svg>
-          </button>
-        </div>
-      </div>
-    </div>
-  `);
-}
-
-// ── Mode ───────────────────────────────────────────────
-function setMode(m) {
-  if (state.mode === m) return;
-  if (state.mode === 'exam') stopExam();
-  state.mode = m;
-  document.getElementById('btnCards').classList.toggle('active', m === 'cards');
-  document.getElementById('btnFeed').classList.toggle('active', m === 'feed');
-  document.getElementById('btnExam').classList.toggle('active', m === 'exam');
+// ── Tabs / mode ────────────────────────────────────────
+function setTabs(m) {
+  $('btnCards').classList.toggle('active', m === 'cards');
+  $('btnFeed').classList.toggle('active', m === 'feed');
+  $('btnExam').classList.toggle('active', m === 'exam');
   const jumpWrap = document.querySelector('.jump-wrap');
   if (jumpWrap) jumpWrap.style.display = m === 'exam' ? 'none' : '';
-  if (m === 'exam') {
-    document.getElementById('view').className = 'card-wrap';
-    if (state.questions.length) startExam();
-    return;
-  }
-  if (!state.questions.length) return;
-  document.getElementById('view').className = m === 'cards' ? 'card-wrap' : 'feed-wrap';
+}
+
+// Resume position only tracks the full list; browsing a filtered list must not overwrite it.
+const savePos = () => { if (state.filter === 'all') saveProgress(state.currentFile, state.idx); };
+
+const wrapFor = () => 'study-wrap';
+
+function pauseExamIfRunning() {
+  if (examState.status === 'active') handleExamAction('exam-pause');
+}
+
+function showLibrary() {
+  pauseExamIfRunning();
+  closeDownload();
+  renderLibrary();
+  window.scrollTo({ top: 0 });
+}
+
+function setMode(m) {
+  closeDownload();
+  if (!state.questions.length) { showLibrary(); return; }
+  if (state.mode === 'exam' && m !== 'exam') stopExam();
+  stopFeedObserver();
+  state.mode = m;
+  setTabs(m);
+  if (m === 'exam') { showExam(); return; }
+  $('view').className = wrapFor(m);
   render();
 }
 
-// ── Jump ───────────────────────────────────────────────
+function render() {
+  state.mode === 'feed' ? renderFeed() : renderCards();
+}
+
+// ── Navigation (cards) ─────────────────────────────────
+function go(delta) {
+  const next = stepIn(delta);
+  if (next === null) return;
+  state.idx = next;
+  savePos();
+  renderCards();
+  window.scrollTo({ top: 0 });
+}
+
 function jumpTo() {
-  const n = parseInt(document.getElementById('jumpInput').value, 10);
+  const n = parseInt($('jumpInput').value, 10);
   if (!n || n < 1 || n > state.questions.length) return;
   if (state.mode === 'cards') {
+    if (state.queue && !state.queue.includes(n - 1)) setFilter('all');
     state.idx = n - 1;
-    state.cardPhase = 'unanswered';
+    savePos();
     renderCards();
-  } else {
-    document.getElementById(`fi-${n - 1}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } else if (state.mode === 'feed') {
+    if (state.queue && !state.queue.includes(n - 1)) { setFilter('all'); renderFeed(); }
+    scrollToFeedItem(n - 1);
   }
-  document.getElementById('jumpInput').value = '';
+  $('jumpInput').value = '';
 }
 
-// ── Navigation ─────────────────────────────────────────
-export function go(delta) {
-  const next = state.idx + delta;
-  if (next < 0 || next >= state.questions.length) return;
-  state.idx = next;
-  state.cardPhase = 'unanswered';
-  saveProgress(state.currentFile, state.idx);
-  renderCards();
-  window.scrollTo({ top: 0, behavior: 'smooth' });
+// ── Loading ────────────────────────────────────────────
+async function loadLibrary(only) {
+  const targets = only ? [only] : state.files;
+  await Promise.all(targets.map(async f => {
+    try { state.library[f] = await fetchQuestions(f); }
+    catch (e) { state.library[f] = { error: e.message }; }
+  }));
 }
 
-// ── Render ─────────────────────────────────────────────
-function render() {
-  state.mode === 'cards' ? renderCards() : renderFeed();
+function fillFileSelect(selected) {
+  const sel = $('fileSelect');
+  sel.innerHTML = '';
+  state.files.forEach(f => {
+    const o = document.createElement('option');
+    o.value = f;
+    o.textContent = fmtName(f);
+    sel.appendChild(o);
+  });
+  if (selected) sel.value = selected;
 }
 
-// ── Load ───────────────────────────────────────────────
-async function loadFile(filename) {
-  document.getElementById('view').className = state.mode === 'cards' ? 'card-wrap' : 'feed-wrap';
+async function loadFile(filename, opts = {}) {
+  closeDownload();
+  if (state.mode === 'exam') stopExam();
+  if (opts.mode) state.mode = opts.mode;
+  setTabs(state.mode);
+  $('view').className = state.mode === 'exam' ? 'card-wrap' : wrapFor(state.mode);
   setView('<div class="state-loading"><div class="spinner"></div><p>Loading questions…</p></div>');
+  $('fileSelect').value = filename;
+
   try {
-    const data = await fetchQuestions(filename);
+    if (!Array.isArray(state.library[filename])) await loadLibrary(filename);
+    const data = state.library[filename];
+    if (!Array.isArray(data)) throw new Error(data?.error || 'Could not read this file');
     if (!data.length) {
       setView('<div class="state-empty"><p>No questions found in this file.</p></div>');
       return;
     }
+
     state.currentFile = filename;
     resetForFile(data);
+    saveLastFile(filename);
 
-    // Restore saved position
-    const savedIdx = loadProgress(filename);
-    if (savedIdx > 0 && savedIdx < data.length) {
+    const filter = opts.filter || 'all';
+    const saved = loadProgress(filename);
+    const savedIdx = saved > 0 && saved < data.length ? saved : 0;
+    if (opts.at != null) {
+      state.idx = Math.min(Math.max(opts.at, 0), data.length - 1);
+      saveProgress(filename, state.idx);
+    } else if (filter === 'all') {
       state.idx = savedIdx;
-      showToast(`Resumed from Q${savedIdx + 1}`);
+    } else {
+      state.idx = savedIdx;           // "back to all" returns here
+      setFilter(filter);
+      if (state.queue?.length) state.idx = state.queue[0];
     }
 
-    const total = data.length;
-    const ji = document.getElementById('jumpInput');
-    const jt = document.getElementById('jumpTotal');
-    if (ji) ji.max = total;
-    if (jt) jt.textContent = `/ ${total}`;
-    render();
+    const ji = $('jumpInput');
+    const jt = $('jumpTotal');
+    if (ji) ji.max = data.length;
+    if (jt) jt.textContent = `of ${data.length}`;
+
+    if (state.mode === 'exam') startExam();
+    else render();
+    window.scrollTo({ top: 0 });
   } catch (e) {
-    setView(`<div class="state-error"><strong>Error:</strong> ${esc(e.message)}</div>`);
+    setView(`<div class="state-error"><strong>Couldn't open this exam.</strong><p>${esc(e.message)}</p><button class="btn" data-action="show-library">Back to your exams</button></div>`);
   }
 }
 
-// ── Refresh file list after download ──────────────────
+// After a download: refresh the list, then open the new file.
 async function refreshFiles(selectFilename) {
   try {
-    const files = await fetchFiles();
-    const sel = document.getElementById('fileSelect');
-    sel.innerHTML = '';
-    files.forEach(f => {
-      const o = document.createElement('option');
-      o.value = f;
-      o.textContent = formatFileName(f);
-      sel.appendChild(o);
-    });
-    if (selectFilename) {
-      sel.value = selectFilename;
-      loadFile(selectFilename);
-    }
+    state.files = await fetchFiles();
+    if (selectFilename) delete state.library[selectFilename];
+    fillFileSelect(selectFilename);
+    if (selectFilename) loadFile(selectFilename, { mode: 'cards' });
   } catch (_) { /* ignore */ }
 }
 
 // ── Boot ───────────────────────────────────────────────
 async function boot() {
-  applyTheme(state.theme);
+  applyTheme(state.theme, false);
 
   try {
-    const files = await fetchFiles();
-    const sel = document.getElementById('fileSelect');
-    sel.innerHTML = '';
+    state.files = await fetchFiles();
+    fillFileSelect();
 
-    if (!files.length) {
-      sel.innerHTML = '<option value="">No .md files found</option>';
-      setView('<div class="state-empty"><p>No exam files found in the <code>exams/</code> folder.</p></div>');
+    if (!state.files.length) {
+      $('view').className = 'welcome-wrap';
+      setView(`
+        <section class="onboard">
+          <h1 class="lib-title">Add your first exam</h1>
+          <p class="lib-sub">The app comes without any exam. There are two ways to add one.</p>
+          <ol class="onboard-steps">
+            <li><strong>Download it here.</strong> Pick a provider and an exam name. This needs Docker Desktop running.</li>
+            <li><strong>Drop a file in.</strong> Put an ExamTopics export (a <code>.md</code> file) in the <code>exams/</code> folder, then reload this page.</li>
+          </ol>
+          <button class="btn btn-submit lib-cta" data-action="show-download">Add an exam</button>
+          <p class="lib-foot"><button class="link-btn" data-action="show-about">About and disclaimer</button></p>
+        </section>`);
+      if (needsDisclaimer()) showAbout({ first: true });
       return;
     }
 
-    files.forEach(f => {
-      const o = document.createElement('option');
-      o.value = f;
-      o.textContent = formatFileName(f);
-      sel.appendChild(o);
-    });
-
-    sel.addEventListener('change', e => loadFile(e.target.value));
-
-    renderWelcome(files);
+    $('fileSelect').addEventListener('change', e => loadFile(e.target.value));
+    await loadLibrary();
+    renderLibrary();
+    if (needsDisclaimer()) showAbout({ first: true });
   } catch (e) {
-    setView(`<div class="state-error"><strong>Could not connect:</strong> ${esc(e.message)}</div>`);
+    setView(`<div class="state-error"><strong>Could not connect to the server.</strong><p>${esc(e.message)}</p></div>`);
   }
 }
 
 // ── Event delegation ────────────────────────────────────
-document.getElementById('view').addEventListener('click', e => {
-  // Download panel from welcome page
-  const dlBtn = e.target.closest('[data-action="show-download"]');
-  if (dlBtn) {
-    renderDownload(f => refreshFiles(f));
-    return;
-  }
-
-  // Load exam from welcome page
-  const loadBtn = e.target.closest('[data-action="load-file"]');
-  if (loadBtn) {
-    const file = loadBtn.dataset.file;
-    document.getElementById('fileSelect').value = file;
-    loadFile(file);
-    return;
-  }
-
+$('view').addEventListener('click', e => {
   // Option click
   const opt = e.target.closest('.option:not(.locked)');
   if (opt) {
@@ -294,69 +249,113 @@ document.getElementById('view').addEventListener('click', e => {
       handleExamAction('exam-pick', { l });
     } else if (state.mode === 'cards') {
       pickCard(l);
-      saveProgress(state.currentFile, state.idx);
+      savePos();
     } else {
       const fi = opt.closest('[data-qi]');
-      if (fi) pickFeedItem(parseInt(fi.dataset.qi), l);
+      if (fi) pickFeedItem(parseInt(fi.dataset.qi, 10), l);
     }
     return;
   }
 
-  // Action buttons
   const btn = e.target.closest('[data-action]');
   if (!btn) return;
   const action = btn.dataset.action;
 
-  if (action === 'reset-progress') {
-    clearProgress(state.currentFile);
-    state.idx = 0;
-    state.cardPhase = 'unanswered';
-    renderCards();
-    showToast('Progress cleared — starting from Q1');
-    return;
-  }
-  if (action === 'toggle-note') {
-    const targetId = btn.dataset.noteTarget;
-    const body = document.getElementById(targetId);
-    if (body) {
-      const open = body.style.display !== 'none';
-      body.style.display = open ? 'none' : 'block';
-      if (!open) body.querySelector('textarea')?.focus();
+  switch (action) {
+    case 'show-library': showLibrary(); return;
+    case 'show-download':
+      pauseExamIfRunning();
+      closeDownload();
+      renderDownload(f => refreshFiles(f));
+      return;
+    case 'open-q':
+      loadFile(btn.dataset.file, { mode: 'cards', at: parseInt(btn.dataset.i, 10) });
+      return;
+    case 'open-exam':
+      loadFile(btn.dataset.file, { mode: btn.dataset.mode || 'cards', filter: btn.dataset.filter || 'all' });
+      return;
+    case 'reset-progress':
+      if (!confirmClick(btn, 'Click again to erase your progress')) return;
+      clearProgress(state.currentFile);
+      clearResults(state.currentFile);
+      setFilter('all');
+      state.idx = 0;
+      state.feedStates = {};
+      render();
+      showToast('Progress erased. Back to question 1.');
+      return;
+    case 'goto':
+      state.idx = parseInt(btn.dataset.i, 10);
+      savePos();
+      renderCards();
+      window.scrollTo({ top: 0 });
+      return;
+    case 'filter':
+      setFilter(btn.dataset.f);
+      savePos();
+      render();
+      window.scrollTo({ top: 0 });
+      return;
+    case 'rename-group': startRename(parseInt(btn.dataset.i, 10)); return;
+    case 'show-about': showAbout(); return;
+    case 'feed-goto': scrollToFeedItem(parseInt(btn.dataset.i, 10)); return;
+    case 'feed-flag': toggleFlagFeed(parseInt(btn.dataset.qi, 10)); return;
+    case 'toggle-nav': toggleNav(); return;
+    case 'toggle-flag': toggleFlagCurrent(); return;
+    case 'reveal': revealCard(); return;
+    case 'toggle-note': {
+      const body = $(btn.dataset.noteTarget);
+      if (body) {
+        const open = body.style.display !== 'none';
+        body.style.display = open ? 'none' : 'block';
+        if (!open) body.querySelector('textarea')?.focus();
+      }
+      return;
     }
-    return;
+    case 'hist-clear':
+      if (!confirmClick(btn, 'Click again to clear')) return;
+      clearHistory();
+      renderHistory();
+      return;
+    case 'prev': go(-1); return;
+    case 'next': go(1); return;
+    case 'toggle-disc': toggleDiscFeedItem(parseInt(btn.dataset.qi, 10)); return;
+    case 'show-more': {
+      const el = $(btn.dataset.list);
+      const count = parseInt(btn.dataset.count, 10);
+      const open = el.style.display === 'block';
+      el.style.display = open ? 'none' : 'block';
+      btn.textContent = open
+        ? `Show ${count} more comment${count !== 1 ? 's' : ''}`
+        : `Hide ${count} comment${count !== 1 ? 's' : ''}`;
+      return;
+    }
   }
-  if (action === 'hist-clear') {
-    clearHistory();
-    renderHistory();
-    return;
-  }
-  if (action === 'prev') { go(-1); return; }
-  if (action === 'next') { go(1); return; }
-  if (action === 'open-disc') { openDiscCard(); return; }
-  if (action === 'close-disc') { closeDiscCard(); return; }
-  if (action === 'toggle-disc') {
-    toggleDiscFeedItem(parseInt(btn.dataset.qi));
-    return;
-  }
-  if (action.startsWith('exam-')) { handleExamAction(action, btn.dataset); return; }
-  if (action === 'show-more') {
-    const el = document.getElementById(btn.dataset.list);
-    const count = parseInt(btn.dataset.count);
-    const open = el.style.display === 'block';
-    el.style.display = open ? 'none' : 'block';
-    btn.textContent = open
-      ? `Show ${count} more comment${count !== 1 ? 's' : ''}`
-      : `Hide ${count} comment${count !== 1 ? 's' : ''}`;
+
+  if (action.startsWith('exam-')) {
+    if (action === 'exam-submit') {
+      const left = examState.questions.length - Object.keys(examState.answers).length;
+      if (!confirmClick(btn, left ? `${left} unanswered. Submit anyway?` : 'Click again to submit')) return;
+    }
+    if (action === 'exam-abandon' && !confirmClick(btn, 'Click again to abandon')) return;
+    handleExamAction(action, btn.dataset);
   }
 });
 
 // Note textarea: save on blur
-document.getElementById('view').addEventListener('blur', e => {
+$('view').addEventListener('blur', e => {
   const ta = e.target;
-  if (!ta.classList.contains('note-textarea')) return;
+  if (ta.classList?.contains('case-textarea')) {
+    saveCaseText(ta.dataset.caseKey, ta.value);
+    const label = ta.closest('.case-box')?.querySelector('.case-state');
+    if (label) label.textContent = ta.value.trim() ? 'Text saved' : 'Text not added';
+    const help = ta.closest('.case-box')?.querySelector('.case-help');
+    if (help) help.hidden = !!ta.value.trim();
+    return;
+  }
+  if (!ta.classList?.contains('note-textarea')) return;
   const qid = ta.dataset.noteQid;
-  const k = noteKey(state.currentFile, qid);
-  saveNote(k, ta.value);
+  saveNote(noteKey(state.currentFile, qid), ta.value);
   const toggle = document.querySelector(`.note-toggle[data-note-qid="${qid}"]`);
   if (toggle) {
     const has = !!ta.value.trim();
@@ -365,28 +364,53 @@ document.getElementById('view').addEventListener('blur', e => {
   }
 }, true);
 
+// Enter / Space on a focused answer
+$('view').addEventListener('keydown', e => {
+  const opt = e.target.closest?.('.option:not(.locked)');
+  if (opt && (e.key === 'Enter' || e.key === ' ')) {
+    e.preventDefault();
+    opt.click();
+  }
+});
+
 // Header events
-document.getElementById('btnHistory').addEventListener('click', renderHistory);
-document.getElementById('btnDownload').addEventListener('click', () => {
+$('btnHistory').addEventListener('click', () => { pauseExamIfRunning(); closeDownload(); renderHistory(); });
+$('btnDownload').addEventListener('click', () => {
+  pauseExamIfRunning();
   closeDownload();
   renderDownload(f => refreshFiles(f));
 });
-document.getElementById('themeToggle').addEventListener('click', toggleTheme);
-document.getElementById('btnCards').addEventListener('click', () => setMode('cards'));
-document.getElementById('btnFeed').addEventListener('click', () => setMode('feed'));
-document.getElementById('btnExam').addEventListener('click', () => setMode('exam'));
-document.getElementById('jumpGo').addEventListener('click', jumpTo);
-document.getElementById('jumpInput').addEventListener('keydown', e => {
+$('themeToggle').addEventListener('click', toggleTheme);
+$('btnCards').addEventListener('click', () => setMode('cards'));
+$('btnFeed').addEventListener('click', () => setMode('feed'));
+$('btnExam').addEventListener('click', () => setMode('exam'));
+document.querySelector('.logo').addEventListener('click', e => {
+  e.preventDefault();
+  if (state.files.length) showLibrary();
+});
+$('jumpInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') jumpTo();
 });
 
-// Keyboard nav (card mode only, not when typing)
+// Keyboard: ← → move, letters answer, Shift+F flag, Enter next
 document.addEventListener('keydown', e => {
-  if (state.mode !== 'cards') return;
-  if (state.cardPhase === 'discussion') return;
-  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
-  if (e.key === 'ArrowLeft' && !e.metaKey) go(-1);
-  if (e.key === 'ArrowRight' && !e.metaKey) go(1);
+  if (!state.questions.length) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const active = document.activeElement;
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(active?.tagName)) return;
+
+  if (state.mode === 'exam') {
+    if (handleExamKey(e)) e.preventDefault();
+    return;
+  }
+  if (state.mode !== 'cards' || !document.querySelector('.study')) return;
+  const onOption = !!active?.closest?.('.option');
+
+  if (e.key === 'ArrowLeft') go(-1);
+  else if (e.key === 'ArrowRight') go(1);
+  else if (e.key === 'Enter' && state.cardPhase === 'answered' && !onOption && !['BUTTON', 'A'].includes(active?.tagName)) go(1);
+  else if (e.key === 'F' && e.shiftKey) toggleFlagCurrent();
+  else if (/^[a-zA-Z]$/.test(e.key) && !e.shiftKey && state.queue?.length !== 0) pickCard(e.key.toUpperCase());
 });
 
 boot();
