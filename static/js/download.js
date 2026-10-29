@@ -41,8 +41,8 @@ export function renderDownload(onFileDone) {
       <div class="dl-hero">
         <div class="dl-hero-icon">${dlIcon}</div>
         <div>
-          <div class="dl-hero-title">Download Exam</div>
-          <div class="dl-hero-sub">Pulls any exam from ExamTopics via the <code>examtopics-downloader</code> Docker image. Docker Desktop must be running.</div>
+          <div class="dl-hero-title">Add an exam</div>
+          <div class="dl-hero-sub">Downloads an exam from ExamTopics with the <code>examtopics-downloader</code> Docker image. Docker Desktop needs to be running.</div>
         </div>
       </div>
 
@@ -53,14 +53,14 @@ export function renderDownload(onFileDone) {
             <select id="dlProvider" class="dl-select">${opts}</select>
           </div>
           <div class="dl-field dl-field-grow">
-            <label class="dl-label" for="dlQuery">Exam search</label>
+            <label class="dl-label" for="dlQuery">Exam name</label>
             <input id="dlQuery" class="dl-input" type="text"
-              placeholder="e.g. data-engineer, devops, 200-301" autocomplete="off" />
+              placeholder="e.g. professional cloud architect, devops, 200-301" autocomplete="off" />
           </div>
         </div>
         <label class="dl-check-label">
           <input type="checkbox" id="dlComments" checked />
-          <span>Include comments <em class="dl-check-hint">(needed for consensus answers)</em></span>
+          <span>Include comments <em class="dl-check-hint">(needed to find the community answer)</em></span>
         </label>
         <button class="btn btn-submit dl-submit" id="dlStart">
           ${dlIcon} Download
@@ -73,7 +73,7 @@ export function renderDownload(onFileDone) {
           <span id="dlStatus" class="dl-log-status"></span>
         </div>
         <div class="dl-log-body" id="dlLogBody">
-          <span class="dl-log-hint">Output will appear here once download starts.</span>
+          <span class="dl-log-hint">Progress shows up here once the download starts.</span>
         </div>
       </div>
     </div>
@@ -135,13 +135,13 @@ function run(onFileDone) {
       closeEs();
       setBtn(false, DL_ICON_HTML);
       setStatus('done', 'done');
-      appendLog(`✓ Saved as ${d.file}`, 'dl-log-success');
+      appendLog(`Saved as ${d.file}`, 'dl-log-success');
 
       const body = document.getElementById('dlLogBody');
       if (body) {
         const loadBtn = document.createElement('button');
         loadBtn.className = 'btn btn-disc dl-load-btn';
-        loadBtn.textContent = `Load "${d.file.replace(/\.md$/i, '')}" →`;
+        loadBtn.textContent = `Open ${d.file.replace(/\.md$/i, '')}`;
         loadBtn.addEventListener('click', () => { if (onFileDone) onFileDone(d.file); });
         body.appendChild(loadBtn);
         body.scrollTop = body.scrollHeight;
@@ -152,7 +152,7 @@ function run(onFileDone) {
       closeEs();
       setBtn(false, DL_ICON_HTML);
       setStatus('error', 'error');
-      appendLog(`✗ ${d.error}`, 'dl-log-error');
+      appendLog(`${d.error}`, 'dl-log-error');
     }
   };
 
@@ -160,6 +160,6 @@ function run(onFileDone) {
     closeEs();
     setBtn(false, DL_ICON_HTML);
     setStatus('error', 'error');
-    appendLog('Connection error — is the server running?', 'dl-log-error');
+    appendLog('The download stopped unexpectedly. Check that the server is still running, then try again.', 'dl-log-error');
   };
 }

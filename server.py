@@ -3,6 +3,7 @@ import re
 import os
 import json
 import subprocess
+from structure import annotate
 from flask import Flask, jsonify, render_template, request, abort, make_response, Response, stream_with_context
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
@@ -26,6 +27,11 @@ _NEW_HEADER_RE = re.compile(
     r'^##\s+Examtopics\s+.*?question\s+#(\d+)',
     re.MULTILINE | re.IGNORECASE,
 )
+# Exam name inside either header, and the exam/topic/question encoded in the ExamTopics URL
+_NEW_NAME_RE = re.compile(r'^##\s+Examtopics\s+(.*?)(?:_\d+)?\s+question\s+#', re.MULTILINE | re.IGNORECASE)
+_OLD_NAME_RE = re.compile(r'^##\s+Exam\s+(.*?)\s+topic\s+\d+\s+question', re.MULTILINE | re.IGNORECASE)
+_URL_EXAM_RE = re.compile(r'exam-(.+?)-topic-(\d+)-question-(\d+)')
+_IMG_URL_RE = re.compile(r'^(https://www\.examtopics\.com/assets/media/\S+)$', re.MULTILINE)
 
 
 def _parse_comment(text):
@@ -88,6 +94,32 @@ def _parse_comments_new(raw):
     return comments
 
 
+def _next_nonempty(lines, start):
+    for line in lines[start:]:
+        if line.strip():
+            return line.strip()
+    return ''
+
+
+def _stem(lines, first_option):
+    """The question text (paragraphs kept) and any exhibit image URLs, from after the header to the first option."""
+    head = lines[:first_option]
+    start = 0
+    for i, line in enumerate(head):
+        t = line.strip()
+        # new format: '## Examtopics ...'; old format: '[All ... Questions]' closes a fixed preamble
+        if t.startswith('## ') or re.match(r'^\[All .*Questions\]$', t):
+            start = i + 1
+    body = [l.rstrip() for l in head[start:] if l.strip() != '//IMG//']
+    images = [l.strip() for l in body if _IMG_URL_RE.match(l.strip())]
+    text = '\n'.join(l for l in body if not _IMG_URL_RE.match(l.strip())).strip()
+    return re.sub(r'\n{3,}', '\n\n', text), images
+
+
+def _humanize(slug):
+    return ' '.join(w.capitalize() for w in slug.split('-'))
+
+
 def _parse_block(block):
     hm_new = _NEW_HEADER_RE.search(block)
     hm_old = _OLD_HEADER_RE.search(block)
@@ -103,29 +135,32 @@ def _parse_block(block):
 
     lines = block.split('\n')
 
-    # Options — handle both "A. text" (old) and "**A:** text" (new)
-    options, opt_indices = {}, []
+    # Options — handle both "A. text" (old) and "**A:** text" (new).
+    # Some questions have image options: "A." followed by "//IMG//"; the image URLs are listed after the options.
+    options, opt_indices, image_letters = {}, [], []
     for i, line in enumerate(lines):
         s = line.strip()
         m = re.match(r'^\*\*([A-Z]):\*\*\s*(.+)$', s) or re.match(r'^([A-Z])\.\s+(.+)$', s)
         if m:
             options[m.group(1)] = m.group(2).strip()
             opt_indices.append(i)
+            continue
+        m = re.match(r'^([A-Z])\.\s*$', s)
+        if m and _next_nonempty(lines, i + 1) == '//IMG//':
+            options[m.group(1)] = 'Image'
+            opt_indices.append(i)
+            image_letters.append(m.group(1))
     if not options:
         return None
+    body = block.split('\nComments:')[0]
+    option_images = dict(zip(image_letters, _IMG_URL_RE.findall(body)))
 
-    # Question text: last non-empty line before first option that contains '?'
-    question_text = ''
-    for line in reversed(lines[:opt_indices[0]]):
-        s = line.strip()
-        if s and '?' in s:
-            question_text = s
-            break
+    # Question text: everything between the header and the first option (a stem can span several paragraphs)
+    question_text, question_images = _stem(lines, opt_indices[0])
     if not question_text:
-        skip = re.compile(r'^(##|Question #|Topic #|\[All|Actual|Google|Examtopics|@)')
         for line in reversed(lines[:opt_indices[0]]):
             s = line.strip()
-            if s and not skip.match(s) and s not in ("Google's", "Professional Data Engineer", "Associate Cloud Engineer"):
+            if s and '?' in s:
                 question_text = s
                 break
 
@@ -162,8 +197,18 @@ def _parse_block(block):
         consensus_answer = max(votes, key=votes.get)
         consensus_votes = votes[consensus_answer]
 
+    # Which exam this question belongs to (a file can hold several)
+    nm = (_NEW_NAME_RE if is_new else _OLD_NAME_RE).search(block)
+    um = _URL_EXAM_RE.search(url or '')
+    exam_name = nm.group(1).strip() if nm else (_humanize(um.group(1)) if um else '')
+    exam_slug = um.group(1) if um else re.sub(r'[^a-z0-9]+', '-', exam_name.lower()).strip('-')
+
     return {
         'id': qnum,
+        'exam_name': exam_name,
+        'exam_slug': exam_slug,
+        'option_images': option_images,
+        'question_images': question_images,
         'topic': topic,
         'question_number': qnum,
         'question': question_text,
@@ -181,7 +226,7 @@ def parse_md(filepath):
     with open(filepath, encoding='utf-8') as f:
         content = f.read()
     blocks = re.split(r'\n-{10,}\n', content)
-    return [q for q in (_parse_block(b) for b in blocks) if q]
+    return annotate([q for q in (_parse_block(b) for b in blocks) if q])
 
 
 @app.route('/')
@@ -225,16 +270,32 @@ _PROVIDERS = {
 _ANSI = re.compile(r'\x1b\[[0-9;]*[mGKHF]')
 
 
+def _normalize_query(raw):
+    """'Professional Cloud Architect' -> 'professional-cloud-architect' (the form the downloader expects)."""
+    return re.sub(r'\s+', '-', raw.strip()).lower()
+
+
+def _sse_error(message):
+    # Errors go out as a stream event: a browser EventSource cannot read a plain JSON error body.
+    return Response(
+        f'data: {json.dumps({"error": message})}\n\n',
+        mimetype='text/event-stream',
+        headers={'Cache-Control': 'no-cache'},
+    )
+
+
 @app.route('/api/download')
 def download_exam():
     provider = request.args.get('provider', '').strip()
-    query = request.args.get('query', '').strip()
+    query = _normalize_query(request.args.get('query', ''))
     comments = request.args.get('comments', 'true') == 'true'
 
     if provider not in _PROVIDERS:
-        return jsonify({'error': 'Invalid provider'}), 400
-    if not query or not re.match(r'^[\w\-\.]+$', query):
-        return jsonify({'error': 'Invalid query — use letters, numbers, hyphens or dots only'}), 400
+        return _sse_error('Unknown provider.')
+    if not query:
+        return _sse_error('Type the name of the exam, for example "professional cloud architect".')
+    if not re.match(r'^[\w\-\.]+$', query):
+        return _sse_error('The exam name can only contain letters, numbers, spaces, hyphens and dots.')
 
     slug = re.sub(r'[^\w]', '-', query.lower()).strip('-')
     filename = f'{provider}-{slug}.md'
