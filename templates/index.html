@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ExamTopics Viewer</title>
+  <meta name="description" content="Study ExamTopics questions with community consensus answers and discussion." />
+  <link rel="icon" type="image/svg+xml" href="/static/img/logo.svg" />
+  <link rel="stylesheet" href="/static/css/app.css" />
+</head>
+<body>
+  <header>
+    <a class="logo" href="/">
+      <img src="/static/img/logo.svg" width="26" height="26" alt="" />
+      ExamTopics Viewer
+    </a>
+
+    <div class="h-divider"></div>
+
+    <div class="mode-toggle">
+      <button id="btnCards" class="mode-btn active">Cards</button>
+      <button id="btnFeed"  class="mode-btn">Feed</button>
+      <button id="btnExam"  class="mode-btn">Exam</button>
+    </div>
+
+    <div class="h-divider"></div>
+
+    <div class="jump-wrap">
+      <span class="jump-label">Q</span>
+      <input
+        id="jumpInput"
+        class="jump-input"
+        type="number"
+        min="1"
+        placeholder="#"
+        aria-label="Jump to question number"
+      />
+      <span id="jumpTotal" class="jump-total"></span>
+      <button id="jumpGo" class="jump-go" aria-label="Go">↵</button>
+    </div>
+
+    <div class="h-spacer"></div>
+
+    <select id="fileSelect" aria-label="Select exam file">
+      <option value="">Loading…</option>
+    </select>
+
+    <button id="btnHistory" class="icon-btn" aria-label="Exam history">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+    </button>
+    <button id="btnDownload" class="icon-btn" aria-label="Download exam">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="8 17 12 21 16 17"/><line x1="12" y1="11" x2="12" y2="21"/><path d="M20.88 18.09A5 5 0 0018 9h-1.26A8 8 0 103 16.29"/></svg>
+    </button>
+    <button id="themeToggle" class="icon-btn" aria-label="Toggle theme">
+      <span id="themeIcon"></span>
+    </button>
+  </header>
+
+  <main>
+    <div id="view" class="card-wrap">
+      <div class="state-loading">
+        <div class="spinner"></div>
+        <p>Loading questions…</p>
+      </div>
+    </div>
+  </main>
+
+  <script type="module" src="/static/js/main.js"></script>
+</body>
+</html>
